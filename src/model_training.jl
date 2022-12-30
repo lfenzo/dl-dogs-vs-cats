@@ -3,6 +3,7 @@ Functions related to the model training
 """
 
 using ProgressBars
+using CUDA
 
 
 """
@@ -23,19 +24,25 @@ end
 
 
 """
-    
+    train_model(learner::Learner, train_loader::T, valid_loader::T; epochs::Integer, device) where T <: DataLoader     
+
+Train a model encapsulated by `learner` using `train_loading` and `valid_loader` for a total of `epochs`.
+    Optinially, pass a device to train the model on the GPU.
 """
 function train_model(learner::Learner, train_loader::T, valid_loader::T; epochs::Integer, device) where T <: DataLoader
 
     train_loss, valid_loss = Vector{Float64}(), Vector{Float64}()
+
+    model = device(learner.neural_network)
     
     for epoch in 1:epochs
-        for (x_batch, y_batch) in ProgressBar(train_loader)
+        #for (x_batch, y_batch) in ProgressBar(train_loader)
+        for (x_batch, y_batch) in train_loader
             x, y = device(x_batch), device(y_batch)
-            gradients = Flux.gradient(() -> learner.loss(learner.neural_network(x), y), learner.trainable_params)
-            Flux.Optimise.update!(optimizer, learner.trainable_params, gradients)
+            gradients = Flux.gradient(() -> learner.loss(model(x), y), learner.trainable_params)
+            Flux.Optimise.update!(learner.optimizer, learner.trainable_params, gradients)
+            println(learner.loss(model(x), y))
         end
-
 
 #        epoch_train_loss = loss_metrics(model, train_loader, device)
 #        epoch_valid_loss = loss_metrics(model, valid_loader, device)

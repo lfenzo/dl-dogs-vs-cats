@@ -3,59 +3,73 @@ using Flux
 using FileIO
 using Random
 using Images
+using Logging
 using MLUtils
 using ImageView
 using Augmentor
 using StatsBase
 using ProgressBars
+using BenchmarkTools
 
-
-const IMAGE_DIR = joinpath("..", "img")
+function build_image_batches(images::Vector{String}; batchsize::Int = 500) :: Vector{Vector{String}}
+    image_batches = []
+    for i in 1:batchsize:length(images)
+        push!(image_batches, images[i:i + batchsize - 1])
+    end
+    return image_batches
+end
 
 
 """
-    load_images(nsamples::Number) :: Tuple{Vectir, Vector}
+    image_batch_to_tensor(path; input_shape::Tuple = (128, 128))
 
 Load `nsamples` images from the dataset directory. Note that `nsamples / 2` exemples from each
 class are returned from this function, not `nsamples`.
+
+This function is meant to be run only once per project instantiation bacause it is rather slow
 """
-function load_images(; nsamples::Int = 2000, input_shape::Tuple = (128, 128))
+function image_batch_to_tensor(path; input_shape::Tuple = (128, 128))
+
+    Logging.disable_logging(Logging.Warn)
 
     # problematic images that must be skipped
     # (only obtained during the executions of the data loading)
     # For now, we are not covering the case in which the random selected samples happen to be one
     # of the problematic ones
-    problematic_images = ["666.jpg", "11702.jpg", "1789.jpg"] 
+    problematic_images = ["666.jpg", "11702.jpg", "1789.jpg", "6245.jpg", "9078.jpg"] 
 
-    # could as well be "cats" since both sub-dirs have the same number of examples
-    all_image_indexes = 1:length(readdir(joinpath(IMAGE_DIR, "dogs")))
-    random_image_indexes = StatsBase.sample(all_image_indexes, trunc(Int32, nsamples / 2), replace = false)
+    class_tensors = []
 
-    cats_vector = Vector()
-    dogs_vector = Vector()
+    for class in ["dogs", "cats"]
+        concatenated_tensors = []
+        for image_batch in build_image_batches(readdir(joinpath("..", "img", class)), batchsize = 500)
+            image_array_container = Vector()
+            for image in image_batch
+                if !(image in problematic_images)
+                    
+                    # uses FileIO to read the image files to an image object
+                    raw_image = FileIO.load(joinpath("../img/$class", image))
+                    resized = imresize(raw_image, input_shape)
 
-    for (container, dataset) in zip([cats_vector, dogs_vector], ["cats", "dogs"])
-        for image in readdir(joinpath("..", "img", dataset))[random_image_indexes]
-            if !(image in problematic_images)
-                
-                # uses FileIO to read the image files to an image object
-                raw_image = FileIO.load(joinpath("../img/$dataset", image))
-                resized = imresize(raw_image, input_shape)
-                
-                # converts the image object into an H x W x C array (we are using (H,W,C,B)-shaped data)
-                # channelview converts the image from a matrix with RGB elements to a tensor with
-                # (height * width * chanels) format
-                image_array = Array{Float32}(permutedims(channelview(resized), (2, 3, 1)))
+                    # handling images with 4 dimensions (not channels)
+                    channel_view = Array{Float32}(channelview(resized))[1:3, :, :, 1]
 
-                push!(container, image_array)
+                    # permuting the dimenrions of the image so that we have images with (H,W,C) format
+                    image_array = permutedims(channel_view, (2, 3, 1))
+
+                    # some images have only one channel, so given the nubmber of available images,
+                    # we can skip them in this part
+                    if size(image_array) == (128, 128, 3)
+                        push!(image_array_container, image_array)
+                    end
+                end
             end
+           push!(concatenated_tensors, cat(image_array_container..., dims = 4))
         end
+        push!(class_tensors, cat(concatenated_tensors..., dims = 4))
     end
 
-    dogs = reduce((a, b) -> cat(a, b, dims = 4), dogs_vector)
-    cats = reduce((a, b) -> cat(a, b, dims = 4), cats_vector)
-
-    return dogs, cats
+    return [class_tensors...]
 end
 
 
@@ -68,14 +82,16 @@ and test dataloaders with batches with `batchsizse` samples.
 function prepare_data(positive_class, negative_class; fractions::Tuple, batchsize::Integer)
 
     # array in the format (128, 128, 3, size)
-    images_tensor = cat(positive_class, negative_class, dims = 4)
+    @time images_tensor = cat(positive_class, negative_class, dims = 4)
+    println(size(images_tensor))
 
-    # since both class containers have the same number of samples, we could have used the negative
-    # classe here as well
-    nsamples = size(positive_class, 4) # the 4th dimention gives us the number of examples
+    # the 4th dimention gives us the number of examples
+    nsamples_positive = size(positive_class, 4)
+    nsamples_negative = size(negative_class, 4) 
 
-    labels = vcat(repeat([1], nsamples), repeat([0], nsamples)) 
+    labels = vcat(repeat([1], nsamples_positive), repeat([0], nsamples_negative)) 
     onehot_labels = Flux.onehotbatch(labels, [0, 1], 1)
+    println(size(onehot_labels))
 
     return [
         DataLoader(dataset, shuffle = true, batchsize = batchsize)
