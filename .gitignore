@@ -1,6 +1,5 @@
 dataset/
 env/
-img/
 .ipynb_checkpoints/
 
 *.zip
